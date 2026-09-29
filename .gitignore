@@ -1,0 +1,13 @@
+# Data: company lists and scan results name real businesses next to their
+# weaknesses. They stay local and are never committed.
+*.csv
+results/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Jupyter
+.ipynb_checkpoints/
