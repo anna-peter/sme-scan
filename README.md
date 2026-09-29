@@ -79,3 +79,12 @@ sme_scan/
 tests/              offline tests for the parsers
 analysis.ipynb      analysis of scan results
 ```
+
+## License
+
+Copyright (c) 2026 Anna Peter. Licensed under the
+[GNU Affero General Public License v3.0](LICENSE): you may use, modify and
+share this code, but if you run a modified version as a network service, you
+must make your source code available to its users.
+
+For other licensing arrangements, contact the author.
