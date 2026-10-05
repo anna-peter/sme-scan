@@ -52,8 +52,11 @@ category.
 
 | Column | Meaning |
 |---|---|
-| `verdict` | `protected` (DMARC quarantine/reject at 100%), `partial enforcement`, `DMARC but no enforcement`, `no DMARC`, or `unknown` (DNS lookup failed) |
-| `dmarc_policy`, `dmarc_sp`, `dmarc_pct` | DMARC policy, effective subdomain policy, percentage applied |
+| `verdict` | `protected`, `partial enforcement`, `DMARC but no enforcement`, `no DMARC`, or `unknown` (DNS lookup failed). `protected` means the least strict receiver still quarantines or rejects failing mail, see `dmarc_effective_policy` |
+| `dmarc_policy`, `dmarc_sp`, `dmarc_pct` | DMARC policy, effective subdomain policy, percentage applied (`pct`, RFC 7489 only) |
+| `dmarc_t` | DMARC test mode (RFC 9989): `y` means receivers apply one level below the published policy |
+| `dmarc_effective_policy` | The policy the least strict receiver applies: `t=` as RFC 9989 defines it, `pct` as RFC 7489 did. E.g. `p=quarantine; t=y` gives `none`, `p=reject; pct=0` gives `quarantine` |
+| `dmarc_obsolete_tags` | Tags present that RFC 9989 removed (`pct`, `rf`, `ri`). Harmless, but a sign the record hasn't been revisited |
 | `dmarc_rua`, `dmarc_ruf` | Whether aggregate / forensic reports are requested |
 | `spf_all` | How the SPF record ends: hard fail, soft fail, redirect, ... |
 | `spf_lookups`, `spf_too_many_lookups` | DNS lookups SPF evaluation needs, and whether it exceeds the RFC 7208 limit of 10 |

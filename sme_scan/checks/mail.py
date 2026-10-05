@@ -22,13 +22,16 @@ COLUMNS = [
     "domain",
     "mx_hosts", "mx_ptr", "mail_provider", "provider_type", "accepts_mail",
     "spf_record", "spf_all", "spf_lookups", "spf_too_many_lookups",
-    "dmarc_record", "dmarc_policy", "dmarc_sp", "dmarc_pct", "dmarc_rua", "dmarc_ruf",
+    "dmarc_record", "dmarc_policy", "dmarc_sp", "dmarc_pct",
+    "dmarc_t", "dmarc_effective_policy", "dmarc_obsolete_tags",
+    "dmarc_rua", "dmarc_ruf",
     "dkim_selectors",
     "mta_sts", "tls_rpt", "bimi",
     "verdict", "error",
 ]
 
-VALID_POLICIES = ("none", "quarantine", "reject")
+VALID_POLICIES = ("none", "quarantine", "reject")  # weakest to strictest
+OBSOLETE_DMARC_TAGS = ("pct", "rf", "ri")  # removed by RFC 9989 (May 2026)
 SPF_LOOKUP_LIMIT = 10  # RFC 7208 section 4.6.4
 
 
@@ -61,12 +64,14 @@ def starts_with_version(record: str, version: str) -> bool:
 
 def parse_dmarc(records: list[str]) -> dict:
     out = {"dmarc_record": "", "dmarc_policy": "", "dmarc_sp": "",
-           "dmarc_pct": "", "dmarc_rua": False, "dmarc_ruf": False}
+           "dmarc_pct": "", "dmarc_t": "", "dmarc_obsolete_tags": "",
+           "dmarc_rua": False, "dmarc_ruf": False}
     dmarc = [r for r in records if starts_with_version(r, "DMARC1")]
     if not dmarc:
         return out
     if len(dmarc) > 1:
-        # RFC 7489 6.6.3: with more than one record, receivers apply no DMARC at all
+        # RFC 7489 6.6.3 / RFC 9989 4.10: with more than one record, all are
+        # discarded, so receivers apply no DMARC at all
         out["dmarc_record"] = " | ".join(dmarc)
         out["dmarc_policy"] = "multiple records"
         return out
@@ -87,6 +92,10 @@ def parse_dmarc(records: list[str]) -> dict:
         # sp= is optional; when absent, subdomains inherit p=
         "dmarc_sp": sp if sp in VALID_POLICIES else policy,
         "dmarc_pct": pct,
+        # t= (RFC 9989 4.7): "y" means testing. Any other value is invalid and
+        # falls back to the default, "n".
+        "dmarc_t": "y" if tags.get("t", "").lower() == "y" else "n",
+        "dmarc_obsolete_tags": " ".join(t for t in OBSOLETE_DMARC_TAGS if t in tags),
         "dmarc_rua": bool(tags.get("rua")),
         "dmarc_ruf": bool(tags.get("ruf")),
     })
@@ -309,20 +318,43 @@ def classify_mx(domain: str, hosts: list[str], ptr_name: str = "") -> tuple[str,
 
 # --- verdict -----------------------------------------------------------------------
 
-def verdict(dmarc_policy: str, dmarc_pct) -> str:
+def step_down(policy: str) -> str:
+    """One level more lenient: reject -> quarantine -> none."""
+    return {"reject": "quarantine", "quarantine": "none"}.get(policy, policy)
+
+
+def effective_policy(policy: str, t: str, pct: int) -> str:
+    """The policy the least strict receiver applies to failing mail.
+
+    Receivers won't all move to RFC 9989 at once, and the two standards read
+    the same record differently. Each ignores the other's tag (both say
+    unknown tags must be ignored):
+    - RFC 9989 receivers apply t=: with t=y, one level below p=.
+    - RFC 7489 receivers apply pct=: mail outside the pct sample gets one
+      level below p=. So p=reject; pct=0 still means "quarantine everything".
+    """
+    new_rules = step_down(policy) if t == "y" else policy
+    old_rules = step_down(policy) if pct < 100 else policy
+    return min(new_rules, old_rules, key=VALID_POLICIES.index)
+
+
+def verdict(dmarc_policy: str, dmarc_t: str, dmarc_pct) -> str:
     """Same categories as the original dmarc-check.py, plus 'partial enforcement'.
 
-    This mirrors how a receiving server treats spoofed mail from the domain.
+    This mirrors how the least strict receiving server treats spoofed mail
+    from the domain.
     """
     if not dmarc_policy:
         return "no DMARC"
-    if dmarc_policy in ("quarantine", "reject"):
-        if dmarc_pct == 100:
-            return "protected"
-        if dmarc_pct > 0:
-            return "partial enforcement"
-    # p=none, malformed, multiple records, or pct=0
-    return "DMARC but no enforcement"
+    if dmarc_policy not in ("quarantine", "reject"):
+        return "DMARC but no enforcement"  # p=none, malformed, multiple records
+
+    if effective_policy(dmarc_policy, dmarc_t, dmarc_pct) != "none":
+        return "protected"
+    if dmarc_t != "y" and 0 < dmarc_pct < 100:
+        # Old-rule receivers quarantine a share of the mail, new-rule receivers all of it
+        return "partial enforcement"
+    return "DMARC but no enforcement"  # p=quarantine with t=y or pct=0
 
 
 # --- the network part ----------------------------------------------------------------
@@ -355,7 +387,10 @@ def check_mail(resolver, domain: str) -> dict:
     row["accepts_mail"] = bool(hosts) and hosts != [""]
     row.update(parse_spf(root_txt))
     row.update(parse_dmarc(dmarc_txt))
-    row["verdict"] = verdict(row["dmarc_policy"], row["dmarc_pct"])
+    if row["dmarc_policy"] in VALID_POLICIES:
+        row["dmarc_effective_policy"] = effective_policy(
+            row["dmarc_policy"], row["dmarc_t"], row["dmarc_pct"])
+    row["verdict"] = verdict(row["dmarc_policy"], row["dmarc_t"], row["dmarc_pct"])
 
     # 2. Optional lookups. A failure here blanks only that field, and is noted.
     errors = []

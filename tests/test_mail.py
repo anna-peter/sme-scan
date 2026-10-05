@@ -1,7 +1,10 @@
 """Offline tests for the email parsers. Run with:  python -m pytest"""
 
+import pytest
+
 from sme_scan.checks.mail import (
-    classify_mx, count_spf_lookups, is_dkim_key, parse_dmarc, parse_spf, verdict,
+    classify_mx, count_spf_lookups, effective_policy, is_dkim_key, parse_dmarc,
+    parse_spf, step_down, verdict,
 )
 from sme_scan.scan import clean_domain
 
@@ -41,15 +44,61 @@ def test_no_dmarc():
     assert parse_dmarc([])["dmarc_policy"] == ""
 
 
+def test_dmarc_t_tag():
+    assert parse_dmarc(["v=DMARC1; p=reject; t=y"])["dmarc_t"] == "y"
+    assert parse_dmarc(["v=DMARC1; p=reject; T=Y"])["dmarc_t"] == "y"
+    assert parse_dmarc(["v=DMARC1; p=reject"])["dmarc_t"] == "n"         # default
+    assert parse_dmarc(["v=DMARC1; p=reject; t=maybe"])["dmarc_t"] == "n"  # invalid -> default
+
+
+def test_dmarc_obsolete_tags():
+    r = parse_dmarc(["v=DMARC1; p=none; pct=100; rf=afrf; ri=86400"])
+    assert r["dmarc_obsolete_tags"] == "pct rf ri"
+    assert parse_dmarc(["v=DMARC1; p=none; t=y"])["dmarc_obsolete_tags"] == ""
+
+
 # --- verdict ---
 
-def test_verdicts():
-    assert verdict("", "") == "no DMARC"
-    assert verdict("none", 100) == "DMARC but no enforcement"
-    assert verdict("reject", 100) == "protected"
-    assert verdict("quarantine", 25) == "partial enforcement"
-    assert verdict("reject", 0) == "DMARC but no enforcement"
-    assert verdict("multiple records", "") == "DMARC but no enforcement"
+def test_step_down():
+    assert step_down("reject") == "quarantine"
+    assert step_down("quarantine") == "none"
+    assert step_down("none") == "none"
+
+
+def test_effective_policy_takes_the_weaker_rule_set():
+    assert effective_policy("reject", "n", 100) == "reject"
+    assert effective_policy("quarantine", "y", 100) == "none"        # RFC 9989 receivers
+    assert effective_policy("quarantine", "n", 50) == "none"         # RFC 7489 receivers
+    assert effective_policy("reject", "y", 50) == "quarantine"       # both: one level down
+
+
+# One row per case from the plan: (record, effective policy, verdict)
+VERDICT_CASES = [
+    ("v=DMARC1; p=reject", "reject", "protected"),
+    ("v=DMARC1; p=reject; t=y", "quarantine", "protected"),
+    ("v=DMARC1; p=quarantine; t=y", "none", "DMARC but no enforcement"),
+    ("v=DMARC1; p=quarantine; t=n", "quarantine", "protected"),
+    ("v=DMARC1; p=quarantine; t=maybe", "quarantine", "protected"),
+    ("v=DMARC1; p=reject; pct=0", "quarantine", "protected"),
+    ("v=DMARC1; p=reject; pct=50", "quarantine", "protected"),
+    ("v=DMARC1; p=quarantine; pct=50", "none", "partial enforcement"),
+    ("v=DMARC1; p=quarantine; pct=0", "none", "DMARC but no enforcement"),
+    ("v=DMARC1; p=reject; t=y; pct=50", "quarantine", "protected"),
+    ("v=DMARC1; p=none", "none", "DMARC but no enforcement"),
+]
+
+
+@pytest.mark.parametrize("record, effective, expected", VERDICT_CASES)
+def test_verdict_cases(record, effective, expected):
+    r = parse_dmarc([record])
+    assert effective_policy(r["dmarc_policy"], r["dmarc_t"], r["dmarc_pct"]) == effective
+    assert verdict(r["dmarc_policy"], r["dmarc_t"], r["dmarc_pct"]) == expected
+
+
+def test_verdict_without_a_usable_record():
+    assert verdict("", "", "") == "no DMARC"
+    assert verdict("multiple records", "", "") == "DMARC but no enforcement"
+    assert verdict("malformed", "n", 100) == "DMARC but no enforcement"
 
 
 # --- SPF ---
