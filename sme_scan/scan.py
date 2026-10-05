@@ -38,6 +38,25 @@ def clean_domain(raw) -> str | None:
     return host if "." in host else None
 
 
+# A spreadsheet treats a cell starting with one of these as a formula
+FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def csv_safe(value):
+    """Stop a cell from running as a spreadsheet formula (CSV injection).
+
+    Several columns hold text that domain and IP owners control (MX names,
+    reverse-DNS names, the provider label derived from them). If such a value
+    starts with '=' and the CSV is opened in Excel or LibreOffice, it can run as
+    a formula. A leading apostrophe makes the spreadsheet show it as plain text.
+    That's OWASP's recommended mitigation. Legitimate values never start with
+    these characters, so real data is unaffected.
+    """
+    if isinstance(value, str) and value.startswith(FORMULA_TRIGGERS):
+        return "'" + value
+    return value
+
+
 def read_domains(path: str, column: str) -> list[str]:
     domains, seen, skipped = [], set(), 0
     with open(path, newline="", encoding="utf-8-sig") as fh:
@@ -123,7 +142,8 @@ def main():
         w = csv.DictWriter(fh, fieldnames=COLUMNS + ["scanned_at"])
         w.writeheader()
         for r in rows:
-            w.writerow({**r, "scanned_at": scanned_at})
+            # Every cell, not just known risky columns, so new columns are covered too
+            w.writerow({k: csv_safe(v) for k, v in {**r, "scanned_at": scanned_at}.items()})
 
     print_summary(rows)
     print(f"\nWrote {args.out}")

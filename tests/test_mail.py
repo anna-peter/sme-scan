@@ -3,8 +3,8 @@
 import pytest
 
 from sme_scan.checks.mail import (
-    classify_mx, count_spf_lookups, effective_policy, is_dkim_key, parse_dmarc,
-    parse_spf, step_down, verdict,
+    SPF_LOOKUP_LIMIT, classify_mx, count_spf_lookups, effective_policy, is_dkim_key,
+    parse_dmarc, parse_spf, step_down, verdict,
 )
 from sme_scan.scan import clean_domain
 
@@ -134,12 +134,31 @@ def test_spf_lookup_count_follows_includes():
     assert count_spf_lookups("firma.ch", dns) == 6
 
 
-def test_spf_lookup_count_survives_include_loop():
+def test_spf_include_loop_runs_into_the_limit():
     dns = fake_dns({
         "a.ch": ["v=spf1 include:b.ch -all"],
         "b.ch": ["v=spf1 include:a.ch -all"],
     })
-    assert count_spf_lookups("a.ch", dns) == 2  # each include costs 1, then the loop stops
+    # Receivers have no loop detection: a loop is simply over the limit
+    assert count_spf_lookups("a.ch", dns) == SPF_LOOKUP_LIMIT + 1
+
+
+def test_spf_exactly_at_the_limit_is_still_counted_exactly():
+    dns = fake_dns({"firma.ch": ["v=spf1 " + " ".join(f"a:h{i}.firma.ch" for i in range(10)) + " -all"]})
+    assert count_spf_lookups("firma.ch", dns) == 10
+
+
+def test_spf_fan_out_is_bounded():
+    # Every name answers with 10 includes of new names (a wildcard record can
+    # do this). Without a shared budget this tree would cost billions of lookups.
+    queried = []
+
+    def hostile_txt(name):
+        queried.append(name)
+        return ["v=spf1 " + " ".join(f"include:c{i}.{name}" for i in range(10)) + " -all"]
+
+    assert count_spf_lookups("evil.com", hostile_txt) == SPF_LOOKUP_LIMIT + 1
+    assert len(queried) <= SPF_LOOKUP_LIMIT + 1
 
 
 # --- DKIM ---

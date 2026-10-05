@@ -45,6 +45,9 @@ Options: `--workers` (parallel domains, default 8), `--timeout` (seconds per
 DNS query, default 5).
 
 The output has one row per domain, and a summary is printed to the terminal.
+Several columns contain text controlled by the scanned domains' owners. Cells
+that a spreadsheet would run as a formula (starting with `=`, `+`, `-`, `@`)
+are written with a leading `'`, so they show as plain text.
 `analysis.ipynb` joins the results back to the input list for analysis by
 category.
 
@@ -59,7 +62,7 @@ category.
 | `dmarc_obsolete_tags` | Tags present that RFC 9989 removed (`pct`, `rf`, `ri`). Harmless, but a sign the record hasn't been revisited |
 | `dmarc_rua`, `dmarc_ruf` | Whether aggregate / forensic reports are requested |
 | `spf_all` | How the SPF record ends: hard fail, soft fail, redirect, ... |
-| `spf_lookups`, `spf_too_many_lookups` | DNS lookups SPF evaluation needs, and whether it exceeds the RFC 7208 limit of 10 |
+| `spf_lookups`, `spf_too_many_lookups` | DNS lookups SPF evaluation needs, and whether it exceeds the RFC 7208 limit of 10. Counting stops at 11 ("over the limit"), as receivers stop evaluating there; include loops therefore also show as over the limit |
 | `dkim_selectors` | DKIM keys found among common selector names. **A lower bound**: selectors can't be listed, so "none found" means unknown |
 | `mta_sts`, `tls_rpt`, `bimi` | Whether these records are published |
 | `mail_provider`, `provider_type` | Who runs the mail, from the MX records. When the MX uses the company's own name (`mail.firma.ch`), reverse DNS of its IP identifies the actual host |

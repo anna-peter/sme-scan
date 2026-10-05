@@ -141,32 +141,47 @@ def parse_spf(records: list[str]) -> dict:
 LOOKUP_TERMS = {"include", "a", "mx", "ptr", "exists", "redirect"}
 
 
-def count_spf_lookups(domain: str, get_txt: Callable[[str], list[str]],
-                      _path: tuple = ()) -> int:
+class _OverLimit(Exception):
+    """Raised inside count_spf_lookups to stop as soon as the budget is spent."""
+
+
+def count_spf_lookups(domain: str, get_txt: Callable[[str], list[str]]) -> int:
     """How many DNS lookups evaluating this domain's SPF record costs.
+
+    Returns the exact count up to SPF_LOOKUP_LIMIT, or SPF_LOOKUP_LIMIT + 1
+    meaning "over the limit". Counting stops there, like a real receiver does
+    (RFC 7208 4.6.4): it aborts after 10 lookups. One budget is shared across
+    the whole include tree, so a hostile record can't make us send more than
+    a dozen queries, however it nests its includes. Include loops need no
+    special handling: they run into the budget, just as they do for receivers.
 
     `get_txt` is passed in rather than imported: in production it queries DNS,
     in tests it's a plain dict lookup. (This pattern is "dependency injection".)
-
-    `_path` holds the chain of includes we're inside, to stop include loops.
     """
-    if domain in _path or len(_path) > SPF_LOOKUP_LIMIT:
-        return 0
-    spf = [r for r in get_txt(domain) if starts_with_version(r, "spf1")]
-    if len(spf) != 1:
-        return 0
-
     count = 0
-    for term in spf[0].split()[1:]:            # [1:] skips "v=spf1"
-        term = term.lstrip("+-~?").lower()     # drop the qualifier
-        name = re.split(r"[:=/]", term, maxsplit=1)[0]
-        if name not in LOOKUP_TERMS:
-            continue                           # ip4:, ip6:, all, exp= cost nothing
-        count += 1
-        if name in ("include", "redirect"):
-            target = re.split(r"[:=]", term, maxsplit=1)[1] if re.search(r"[:=]", term) else ""
-            if target and "%" not in target:   # skip SPF macros like %{i}
-                count += count_spf_lookups(target, get_txt, _path + (domain,))
+
+    def evaluate(name: str) -> None:
+        nonlocal count  # one counter shared by every level of the recursion
+        spf = [r for r in get_txt(name) if starts_with_version(r, "spf1")]
+        if len(spf) != 1:
+            return
+        for term in spf[0].split()[1:]:            # [1:] skips "v=spf1"
+            term = term.lstrip("+-~?").lower()     # drop the qualifier
+            mech = re.split(r"[:=/]", term, maxsplit=1)[0]
+            if mech not in LOOKUP_TERMS:
+                continue                           # ip4:, ip6:, all, exp= cost nothing
+            count += 1
+            if count > SPF_LOOKUP_LIMIT:
+                raise _OverLimit
+            if mech in ("include", "redirect"):
+                target = re.split(r"[:=]", term, maxsplit=1)[1] if re.search(r"[:=]", term) else ""
+                if target and "%" not in target:   # skip SPF macros like %{i}
+                    evaluate(target)
+
+    try:
+        evaluate(domain)
+    except _OverLimit:
+        return SPF_LOOKUP_LIMIT + 1
     return count
 
 
